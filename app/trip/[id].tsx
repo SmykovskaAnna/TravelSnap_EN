@@ -1,10 +1,26 @@
-import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useMemo } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import RatingStars from '@/components/RatingStars';
+import CountryCard from '@/components/CountryCard';
+import ErrorView from '@/components/ErrorView';
 import { useTrips } from '@/contexts/TripContext';
 import { useFavorites } from '@/hooks/useFavorites';
+import { useFetch } from '@/hooks/useFetch';
+import { UNSPLASH_ACCESS_KEY, UNSPLASH_BASE_URL } from '@/constants/api';
+import { extractCountry } from '@/utils/destination';
+import type { UnsplashResponse } from '@/types/unsplash';
 import { Colors } from '@/constants/Colors';
 
 export default function TripDetailScreen() {
@@ -16,16 +32,25 @@ export default function TripDetailScreen() {
   const trip = trips.find((t) => t.id === id);
   const favorited = isFavorite(id);
 
+  const photoUrl = trip
+    ? `${UNSPLASH_BASE_URL}/search/photos?query=${encodeURIComponent(trip.destination)}&per_page=1`
+    : '';
+
+  const unsplashInit = useMemo<RequestInit>(
+    () => ({ headers: { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` } }),
+    []
+  );
+
+  const { data: photoData, loading: photoLoading } = useFetch<UnsplashResponse>(
+    photoUrl,
+    unsplashInit
+  );
+
   if (!trip) {
     return (
       <>
         <Stack.Screen options={{ title: 'Trip not found' }} />
-        <View style={styles.errorScreen}>
-          <Text style={styles.errorText}>Trip not found.</Text>
-          <Pressable style={styles.backButton} onPress={() => router.back()}>
-            <Text style={styles.backButtonText}>Back to list</Text>
-          </Pressable>
-        </View>
+        <ErrorView message="Trip not found." onRetry={() => router.back()} retryLabel="Go back" />
       </>
     );
   }
@@ -33,48 +58,71 @@ export default function TripDetailScreen() {
   const { title, destination, date, rating, imageUri, galleryUris } = trip;
   const galleryCount = new Set([imageUri, ...(galleryUris ?? [])].filter(Boolean)).size;
 
+  const heroUri = photoData?.results?.[0]?.urls?.regular ?? imageUri;
+  const photoAuthor = photoData?.results?.[0]?.user?.name;
+
   return (
     <>
       <Stack.Screen
         options={{
           title,
           headerRight: () => (
-          <View style={styles.headerButtons}>
-            <Pressable
-              onPress={() =>
-                router.push({ pathname: '/trip/edit/[id]', params: { id } })
-              }
-              style={styles.headerButton}
-            >
-              <Ionicons name="create-outline" size={22} color={Colors.primary} />
-            </Pressable>
-            {isLoading ? (
-              <View style={styles.headerButton}>
-                <ActivityIndicator size="small" color={Colors.textSecondary} />
-              </View>
-            ) : (
-              <Pressable onPress={() => toggleFavorite(id)} style={styles.headerButton}>
-                <Ionicons
-                  name={favorited ? 'heart' : 'heart-outline'}
-                  size={24}
-                  color={favorited ? Colors.accent : Colors.textSecondary}
-                />
+            <View style={styles.headerButtons}>
+              <Pressable
+                onPress={() =>
+                  router.push({ pathname: '/trip/edit/[id]', params: { id } })
+                }
+                style={styles.headerButton}
+              >
+                <Ionicons name="create-outline" size={22} color={Colors.primary} />
               </Pressable>
-            )}
-          </View>
-        ),
+              {isLoading ? (
+                <View style={styles.headerButton}>
+                  <ActivityIndicator size="small" color={Colors.textSecondary} />
+                </View>
+              ) : (
+                <Pressable onPress={() => toggleFavorite(id)} style={styles.headerButton}>
+                  <Ionicons
+                    name={favorited ? 'heart' : 'heart-outline'}
+                    size={24}
+                    color={favorited ? Colors.accent : Colors.textSecondary}
+                  />
+                </Pressable>
+              )}
+            </View>
+          ),
         }}
       />
 
       <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-        {imageUri ? (
-          <Image source={{ uri: imageUri }} style={styles.heroImage} />
+        {/* Hero photo */}
+        {heroUri ? (
+          <View style={styles.heroContainer}>
+            <Image source={{ uri: heroUri }} style={styles.heroImage} resizeMode="cover" />
+            {photoLoading && (
+              <View style={styles.heroSpinner}>
+                <ActivityIndicator size="large" color={Colors.primary} />
+              </View>
+            )}
+            {photoAuthor && (
+              <Text style={styles.attribution}>Photo by {photoAuthor} on Unsplash</Text>
+            )}
+          </View>
         ) : (
           <View style={styles.placeholder}>
-            <Ionicons name="image-outline" size={64} color="#4A6FA5" />
-            <Text style={styles.placeholderText}>No photo</Text>
+            {photoLoading ? (
+              <ActivityIndicator size="large" color={Colors.primary} />
+            ) : (
+              <>
+                <Ionicons name="image-outline" size={64} color="#4A6FA5" />
+                <Text style={styles.placeholderText}>No photo</Text>
+              </>
+            )}
           </View>
         )}
+
+        {/* Country info */}
+        <CountryCard countryName={extractCountry(destination)} />
 
         <Pressable
           style={styles.galleryButton}
@@ -142,11 +190,27 @@ const styles = StyleSheet.create({
     paddingTop: 20,
     paddingBottom: 40,
   },
+  heroContainer: {
+    marginBottom: 4,
+  },
   heroImage: {
     width: '100%',
     height: 250,
     borderRadius: 18,
-    marginBottom: 16,
+  },
+  heroSpinner: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+  },
+  attribution: {
+    fontSize: 11,
+    color: Colors.textSecondary,
+    textAlign: 'right',
+    marginTop: 4,
+    marginBottom: 12,
   },
   placeholder: {
     height: 250,
@@ -237,15 +301,5 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: 'bold',
     fontSize: 16,
-  },
-  errorScreen: {
-    flex: 1,
-    backgroundColor: Colors.background,
-    padding: 24,
-  },
-  errorText: {
-    fontSize: 16,
-    color: Colors.textSecondary,
-    marginBottom: 24,
   },
 });

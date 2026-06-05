@@ -1,17 +1,29 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { FlatList, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 
+import DestinationCard from '@/components/DestinationCard';
 import { Colors } from '@/constants/Colors';
 
+const POPULAR = [
+  'Tokyo', 'Lisbon', 'Reykjavik', 'Bali',
+  'Cape Town', 'Kyoto', 'Marrakech', 'Patagonia',
+];
+
 export default function ExploreScreen() {
+  const [listKey, setListKey] = useState(0);
+
   return (
     <SafeAreaView style={styles.safeArea}>
-      <View style={styles.centered}>
-        <Ionicons name="compass" size={64} color={Colors.primary} />
-        <Text style={styles.title}>Discover new places</Text>
-        <Text style={styles.subtitle}>Coming soon...</Text>
-      </View>
+      <FlatList
+        key={listKey}
+        data={POPULAR}
+        keyExtractor={(city) => city}
+        renderItem={({ item }) => <DestinationCard city={item} />}
+        contentContainerStyle={styles.list}
+        refreshing={false}
+        onRefresh={() => setListKey((k) => k + 1)}
+      />
     </SafeAreaView>
   );
 }
@@ -21,20 +33,8 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-  },
-  title: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: Colors.textPrimary,
-    marginTop: 8,
-  },
-  subtitle: {
-    fontSize: 15,
-    color: Colors.textSecondary,
+  list: {
+    padding: 16,
+    gap: 16,
   },
 });
