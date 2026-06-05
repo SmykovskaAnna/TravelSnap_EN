@@ -1,36 +1,43 @@
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import React from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { GestureResponderEvent } from 'react-native';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 
 import { Colors } from '@/constants/Colors';
 import type { Trip } from '@/types/trip';
-
 import RatingStars from './RatingStars';
 
-interface TripCardProps extends Trip {
+interface TripCardProps {
+  trip: Trip;
+  onPress: (id: string) => void;
   onDelete?: () => void;
 }
 
-export default function TripCard({
-  title,
-  destination,
-  date,
-  rating,
-  imageUri,
-  galleryUris,
+export const TripCard = React.memo(function TripCard({
+  trip,
+  onPress,
   onDelete,
 }: TripCardProps) {
+  const { title, destination, date, rating, imageUri, galleryUris } = trip;
   const photoCount = new Set([imageUri, ...(galleryUris ?? [])].filter(Boolean)).size;
 
   const handleDeletePress = (event: GestureResponderEvent): void => {
-    // Prevent parent card press (Link navigation) when deleting.
     event.stopPropagation();
     onDelete?.();
   };
 
   return (
-    <View style={styles.card}>
-      {imageUri && <Image source={{ uri: imageUri }} style={styles.cardImage} />}
+    <Pressable style={styles.card} onPress={() => onPress(trip.id)}>
+      {imageUri && (
+        <Image
+          source={{ uri: imageUri }}
+          style={styles.cardImage}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={200}
+        />
+      )}
 
       {photoCount > 0 && (
         <View style={styles.galleryBadge}>
@@ -54,9 +61,11 @@ export default function TripCard({
       <View style={styles.ratingRow}>
         <RatingStars rating={rating} />
       </View>
-    </View>
+    </Pressable>
   );
-}
+});
+
+export default TripCard;
 
 const styles = StyleSheet.create({
   card: {

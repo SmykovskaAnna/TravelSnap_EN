@@ -2,13 +2,13 @@ import { useMemo } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -98,7 +98,14 @@ export default function TripDetailScreen() {
         {/* Hero photo */}
         {heroUri ? (
           <View style={styles.heroContainer}>
-            <Image source={{ uri: heroUri }} style={styles.heroImage} resizeMode="cover" />
+            <Image
+            source={{ uri: heroUri }}
+            style={styles.heroImage}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            transition={300}
+            placeholder={{ blurhash: 'LGF5]+Yk^6#M@-5c,1J5@[or[Q6.' }}
+          />
             {photoLoading && (
               <View style={styles.heroSpinner}>
                 <ActivityIndicator size="large" color={Colors.primary} />

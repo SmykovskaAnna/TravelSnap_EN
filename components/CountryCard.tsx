@@ -1,4 +1,5 @@
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
 import { useMemo } from 'react';
 
 import { useFetch } from '@/hooks/useFetch';
@@ -28,7 +29,7 @@ export default function CountryCard({ countryName }: CountryCardProps) {
 
   return (
     <View style={styles.card}>
-      <Image source={{ uri: country.flags.png }} style={styles.flag} resizeMode="cover" />
+      <Image source={{ uri: country.flags.png }} style={styles.flag} contentFit="cover" cachePolicy="memory-disk" transition={200} />
       <View style={styles.info}>
         <Text style={styles.name}>{country.name.common}</Text>
         <Text style={styles.detail}>Capital: {country.capital?.[0] ?? '–'}</Text>

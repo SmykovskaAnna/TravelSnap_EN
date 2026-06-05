@@ -1,4 +1,5 @@
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
 
 import { useFetch } from '@/hooks/useFetch';
 import { UNSPLASH_ACCESS_KEY, UNSPLASH_BASE_URL } from '@/constants/api';
@@ -29,7 +30,7 @@ export default function DestinationCard({ city }: DestinationCardProps) {
 
   return (
     <View style={styles.card}>
-      <Image source={{ uri: photoUri }} style={styles.photo} resizeMode="cover" />
+      <Image source={{ uri: photoUri }} style={styles.photo} contentFit="cover" cachePolicy="memory-disk" transition={200} />
       <View style={styles.overlay}>
         <Text style={styles.cityName}>{city}</Text>
       </View>
