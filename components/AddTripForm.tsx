@@ -1,68 +1,74 @@
-import { useEffect, useRef, useState } from 'react';
-import { Alert, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useRef } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 
+import { tripSchema, type TripFormData } from '@/types/tripSchema';
+import { useTrips } from '@/contexts/TripContext';
+import RatingStars from '@/components/RatingStars';
 import { Colors } from '@/constants/Colors';
-import type { TripData } from '@/types/trip';
 import { deleteImage, deleteTripAssets, saveImageToTrip } from '@/utils/imageStorage';
-
-interface AddTripFormProps {
-  onAdd: (trip: TripData, tripId: string) => void;
-}
-
-const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
-
-const validate = (title: string, destination: string, date: string, rating: string): string | null => {
-  if (!title.trim() || !destination.trim() || !date.trim() || !rating.trim())
-    return 'All fields are required!';
-  if (!DATE_REGEX.test(date))
-    return 'Date must be in YYYY-MM-DD format!';
-  const ratingNum = Number(rating);
-  if (isNaN(ratingNum) || ratingNum < 1 || ratingNum > 5)
-    return 'Rating must be a number between 1 and 5!';
-  return null;
-};
 
 const createTripId = (): string => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-export default function AddTripForm({ onAdd }: AddTripFormProps) {
-  const [title, setTitle] = useState('');
-  const [destination, setDestination] = useState('');
-  const [date, setDate] = useState('');
-  const [rating, setRating] = useState('');
-  const [imageUri, setImageUri] = useState<string>();
-  const [draftTripId, setDraftTripId] = useState(createTripId);
-  const latestImageUri = useRef<string | undefined>(undefined);
-  const latestDraftTripId = useRef<string>(draftTripId);
+export default function AddTripForm() {
+  const { addTrip } = useTrips();
+  const router = useRouter();
+
+  const draftTripId = useRef(createTripId());
   const didSubmit = useRef(false);
+  const latestImageUri = useRef<string | undefined>(undefined);
+
+  const {
+    control,
+    handleSubmit,
+    setValue,
+    watch,
+    formState: { errors, isSubmitting },
+  } = useForm<TripFormData>({
+    resolver: zodResolver(tripSchema),
+    mode: 'onBlur',
+    defaultValues: {
+      title: '',
+      destination: '',
+      date: '',
+      rating: 3,
+      galleryUris: [],
+    },
+  });
+
+  const imageUri = watch('imageUri');
 
   useEffect(() => {
     latestImageUri.current = imageUri;
   }, [imageUri]);
 
-  useEffect(() => {
-    latestDraftTripId.current = draftTripId;
-  }, [draftTripId]);
-
+  // Clean up draft images if user leaves without submitting
   useEffect(() => {
     return () => {
-      if (didSubmit.current || !latestImageUri.current) {
-        return;
-      }
-
-      void deleteTripAssets(latestDraftTripId.current);
+      if (didSubmit.current || !latestImageUri.current) return;
+      void deleteTripAssets(draftTripId.current);
     };
   }, []);
 
   const replaceDraftImage = async (sourceUri: string): Promise<void> => {
-    const savedUri = await saveImageToTrip(sourceUri, draftTripId);
-
+    const savedUri = await saveImageToTrip(sourceUri, draftTripId.current);
     if (imageUri && imageUri !== savedUri) {
       await deleteImage(imageUri);
     }
-
-    setImageUri(savedUri);
+    setValue('imageUri', savedUri);
   };
 
   const pickImage = async (): Promise<void> => {
@@ -73,12 +79,7 @@ export default function AddTripForm({ onAdd }: AddTripFormProps) {
         aspect: [16, 9],
         quality: 0.8,
       });
-
-      if (result.canceled) {
-        return;
-      }
-
-      await replaceDraftImage(result.assets[0].uri);
+      if (!result.canceled) await replaceDraftImage(result.assets[0].uri);
     } catch {
       Alert.alert('Photo error', 'Could not select a photo. Please try again.');
     }
@@ -87,24 +88,17 @@ export default function AddTripForm({ onAdd }: AddTripFormProps) {
   const takePhoto = async (): Promise<void> => {
     try {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
-
       if (permission.status !== 'granted') {
         Alert.alert('Camera access needed', 'Allow camera access to take a trip photo.');
         return;
       }
-
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [16, 9],
         quality: 0.8,
       });
-
-      if (result.canceled) {
-        return;
-      }
-
-      await replaceDraftImage(result.assets[0].uri);
+      if (!result.canceled) await replaceDraftImage(result.assets[0].uri);
     } catch {
       Alert.alert('Photo error', 'Could not take a photo. Please try again.');
     }
@@ -118,66 +112,107 @@ export default function AddTripForm({ onAdd }: AddTripFormProps) {
     ]);
   };
 
-  const handleSubmit = (): void => {
-    const error = validate(title, destination, date, rating);
-    if (error) {
-      Alert.alert('Error', error);
-      return;
+  const onSubmit = async (data: TripFormData): Promise<void> => {
+    try {
+      didSubmit.current = true;
+      addTrip(
+        {
+          ...data,
+          galleryUris: data.imageUri ? [data.imageUri] : [],
+        },
+        draftTripId.current
+      );
+      router.back();
+    } catch (err) {
+      didSubmit.current = false;
+      Alert.alert('Could not save', String(err));
     }
-
-    didSubmit.current = true;
-
-    onAdd({
-      title: title.trim(),
-      destination: destination.trim(),
-      date: date.trim(),
-      rating: Number(rating),
-      imageUri,
-      galleryUris: imageUri ? [imageUri] : [],
-    }, draftTripId);
-
-    setTitle('');
-    setDestination('');
-    setDate('');
-    setRating('');
-    setImageUri(undefined);
-    setDraftTripId(createTripId());
   };
 
   return (
     <View style={styles.form}>
       <Text style={styles.formTitle}>Add new trip</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Title"
-        placeholderTextColor={Colors.textSecondary}
-        value={title}
-        onChangeText={setTitle}
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Destination"
-        placeholderTextColor={Colors.textSecondary}
-        value={destination}
-        onChangeText={setDestination}
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Date (YYYY-MM-DD)"
-        placeholderTextColor={Colors.textSecondary}
-        value={date}
-        onChangeText={setDate}
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Rating (1-5)"
-        placeholderTextColor={Colors.textSecondary}
-        value={rating}
-        onChangeText={setRating}
-        keyboardType="numeric"
+      {/* Title */}
+      <Controller
+        control={control}
+        name="title"
+        render={({ field, fieldState }) => (
+          <>
+            <TextInput
+              style={[styles.input, fieldState.error && styles.inputError]}
+              placeholder="Title"
+              placeholderTextColor={Colors.textSecondary}
+              value={field.value}
+              onChangeText={field.onChange}
+              onBlur={field.onBlur}
+            />
+            {fieldState.error && (
+              <Text style={styles.errorText}>{fieldState.error.message}</Text>
+            )}
+          </>
+        )}
       />
 
+      {/* Destination */}
+      <Controller
+        control={control}
+        name="destination"
+        render={({ field, fieldState }) => (
+          <>
+            <TextInput
+              style={[styles.input, fieldState.error && styles.inputError]}
+              placeholder="Destination"
+              placeholderTextColor={Colors.textSecondary}
+              value={field.value}
+              onChangeText={field.onChange}
+              onBlur={field.onBlur}
+            />
+            {fieldState.error && (
+              <Text style={styles.errorText}>{fieldState.error.message}</Text>
+            )}
+          </>
+        )}
+      />
+
+      {/* Date */}
+      <Controller
+        control={control}
+        name="date"
+        render={({ field, fieldState }) => (
+          <>
+            <TextInput
+              style={[styles.input, fieldState.error && styles.inputError]}
+              placeholder="Date (YYYY-MM-DD)"
+              placeholderTextColor={Colors.textSecondary}
+              value={field.value}
+              onChangeText={field.onChange}
+              onBlur={field.onBlur}
+            />
+            {fieldState.error && (
+              <Text style={styles.errorText}>{fieldState.error.message}</Text>
+            )}
+          </>
+        )}
+      />
+
+      {/* Rating — stars instead of text input */}
+      <Controller
+        control={control}
+        name="rating"
+        render={({ field, fieldState }) => (
+          <>
+            <View style={styles.ratingRow}>
+              <RatingStars value={field.value} onChange={field.onChange} />
+            </View>
+            {fieldState.error && (
+              <Text style={styles.errorText}>{fieldState.error.message}</Text>
+            )}
+          </>
+        )}
+      />
+
+      {/* Photo */}
       {imageUri ? (
         <View style={styles.photoSection}>
           <Image source={{ uri: imageUri }} style={styles.previewImage} />
@@ -192,8 +227,17 @@ export default function AddTripForm({ onAdd }: AddTripFormProps) {
         </Pressable>
       )}
 
-      <Pressable style={styles.addButton} onPress={handleSubmit}>
-        <Text style={styles.addButtonText}>Add Trip</Text>
+      {/* Submit */}
+      <Pressable
+        onPress={handleSubmit(onSubmit)}
+        disabled={isSubmitting}
+        style={[styles.addButton, isSubmitting && styles.addButtonDisabled]}
+      >
+        {isSubmitting ? (
+          <ActivityIndicator color={Colors.textPrimary} />
+        ) : (
+          <Text style={styles.addButtonText}>Add Trip</Text>
+        )}
       </Pressable>
     </View>
   );
@@ -225,6 +269,19 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     fontSize: 16,
     color: Colors.textPrimary,
+  },
+  inputError: {
+    borderColor: Colors.accent,
+    borderWidth: 1.5,
+    marginBottom: 4,
+  },
+  errorText: {
+    color: Colors.accent,
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  ratingRow: {
+    marginBottom: 12,
   },
   photoSection: {
     marginBottom: 12,
@@ -270,6 +327,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     marginTop: 8,
+  },
+  addButtonDisabled: {
+    opacity: 0.5,
   },
   addButtonText: {
     color: Colors.textPrimary,
