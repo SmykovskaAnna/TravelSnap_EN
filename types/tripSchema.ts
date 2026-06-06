@@ -25,6 +25,11 @@ export const tripSchema = z.object({
   imageUri: z.string().optional(),
 
   galleryUris: z.array(z.string()).optional(),
+
+  coordinates: z.object({
+    latitude: z.number(),
+    longitude: z.number(),
+  }).optional(),
 });
 
 export type TripFormData = z.infer<typeof tripSchema>;

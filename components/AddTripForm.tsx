@@ -14,6 +14,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 
 import { tripSchema, type TripFormData } from '@/types/tripSchema';
 import { useTrips } from '@/contexts/TripContext';
@@ -112,13 +113,27 @@ export default function AddTripForm() {
     ]);
   };
 
+  const geocodeDestination = async (destination: string) => {
+    try {
+      const results = await Location.geocodeAsync(destination);
+      if (results.length > 0) {
+        return { latitude: results[0].latitude, longitude: results[0].longitude };
+      }
+    } catch {
+      // Geocoding is best-effort — no error shown to user
+    }
+    return undefined;
+  };
+
   const onSubmit = async (data: TripFormData): Promise<void> => {
     try {
       didSubmit.current = true;
+      const coordinates = await geocodeDestination(data.destination);
       addTrip(
         {
           ...data,
           galleryUris: data.imageUri ? [data.imageUri] : [],
+          coordinates,
         },
         draftTripId.current
       );
