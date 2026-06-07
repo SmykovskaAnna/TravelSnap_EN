@@ -1,338 +1,580 @@
-# Task 11 - Maps & Location
+# Task 12 - Animations & Gestures
 
 ## Goal
 
-Add a new **Map** tab to TravelSnap featuring a full-screen map that displays pins (markers) for every trip that has coordinates. The user can tap a marker to reveal a callout with a thumbnail and title, then navigate to the trip details. The map automatically adjusts its viewport to fit all markers.
+Elevate TravelSnap from a functional app to a polished native-feeling product by adding fluid animations and gesture interactions. You will implement animated list entry, spring-powered tap feedback, swipe-to-delete with gestures, an animated FAB, and — optionally - skeleton loading, shared element transitions, and a parallax header.
 
 ---
 
-## Step 0 - Setup
+## Step 0 - Installation & Configuration
 
-**Goal:** Install dependencies and configure the Google Maps API key.
+**Goal:** install the libraries and configure the environment so shared values work correctly.
+
+**Files:** `package.json`, `app/_layout.tsx` *(+ `babel.config.js` only on SDK ≤ 51)*
+
+### Step 0a - check your Expo SDK version
+
+Open `package.json` and find the `"expo"` field:
+
+```json
+// package.json (excerpt)
+{
+  "dependencies": {
+    "expo": "~52.0.0"   // <-- check this number
+  }
+}
+```
+
+- **SDK 52 or higher** → New Architecture is active by default; reanimated works without any Babel config - **skip to 0c**
+- **SDK 51 or lower** → Babel plugin is required - **complete 0b first, then 0c**
+
+### Step 0b - Babel plugin *(SDK ≤ 51 only)*
+
+If you don't have a `babel.config.js`, create one in the project root. Add the reanimated plugin as the **last** entry in the `plugins` array:
+
+```js
+// babel.config.js
+module.exports = function (api) {
+  api.cache(true);
+  return {
+    presets: ['babel-preset-expo'],
+    plugins: [
+      // ... any other plugins
+      'react-native-reanimated/plugin', // MUST be last!
+    ],
+  };
+};
+```
+
+After saving, clear the Metro cache:
 
 ```bash
-npx expo install expo-location react-native-maps
+npx expo start --clear
 ```
 
-**Requirements:**
+> **Why last?** Reanimated must process code after all other transforms. If it isn't last, shared values are silently ignored — no errors, no animations.
 
-1. Install both packages with a single command.
-2. For Android: add a Google Maps API key in `app.json` (or `app.config.ts`):
-   ```json
-   {
-     "expo": {
-       "android": {
-         "config": {
-           "googleMaps": {
-             "apiKey": "YOUR_GOOGLE_MAPS_API_KEY"
-           }
-         }
-       }
-     }
-   }
-   ```
-3. For iOS: Apple Maps works without a key - no extra configuration needed.
-4. Rebuild after installing: `npx expo run:android` or `npx expo run:ios` (react-native-maps does not work in Expo Go on Android with the Google provider).
+### Step 0c - install packages and add GestureHandlerRootView
 
-**⚠ Pitfall:** The Google Maps API key must be **unrestricted** initially. A restricted key results in a blank map with zero console errors. Restrict it only after confirming the map renders.
+```bash
+npx expo install react-native-reanimated react-native-gesture-handler
+```
+
+```tsx
+// app/_layout.tsx
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+
+export default function RootLayout() {
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      {/* rest of navigation */}
+    </GestureHandlerRootView>
+  );
+}
+```
+
+> **Pitfall:** `GestureHandlerRootView` must wrap the ENTIRE app tree — adding it to a single screen means gestures silently fail on all other screens.
 
 ---
 
-## Step 1 - Custom Hook `useLocation`
+## Step 1 - useSharedValue + useAnimatedStyle
 
-**Goal:** Create a reusable hook that retrieves the user's current location.
+**Goal:** understand the fundamentals of reanimated: shared values and animated styles.
 
-**File:** `hooks/useLocation.ts`
+**Files:** any test component, or directly in `components/AnimatedTripCard.tsx`
 
-**Signature:**
+**Requirements:**
+1. Use `useSharedValue` to hold an animated value (e.g. opacity, scale).
+2. Use `useAnimatedStyle` to map the value to a style object.
+3. Wrap the view in `Animated.View` (from reanimated).
 
-```ts
-import { LocationObject } from 'expo-location';
+```tsx
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+} from 'react-native-reanimated';
 
-interface UseLocationResult {
-  location: LocationObject | null;
-  error: string | null;
-  loading: boolean;
+function AnimatedBox() {
+  const scale = useSharedValue(1);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  return (
+    <Animated.View style={[styles.box, animatedStyle]}>
+      {/* content */}
+    </Animated.View>
+  );
+}
+```
+
+> **Pitfall:** Do NOT use `Animated.View` from `react-native` together with `useAnimatedStyle` from reanimated - they are two separate animation systems that do not interoperate.
+
+---
+
+## Step 2 - List Entry Animation (FadeInDown)
+
+**Goal:** TripCard items appear with an entry animation on first render.
+
+**Files:** `components/AnimatedTripCard.tsx`, `app/(tabs)/index.tsx`
+
+**Requirements:**
+1. Wrap the card in `Animated.View` with the `entering` prop.
+2. Use `FadeInDown.delay(index * 80).springify()` - each card with a different delay.
+3. In `app/(tabs)/index.tsx` replace `FlatList` with `Animated.FlatList` and render `AnimatedTripCard`.
+
+```tsx
+// components/AnimatedTripCard.tsx
+import Animated, { FadeInDown } from 'react-native-reanimated';
+
+interface AnimatedTripCardProps {
+  trip: Trip;
+  index: number;
+  onDelete: (id: string) => void;
 }
 
-export function useLocation(): UseLocationResult;
+export function AnimatedTripCard({ trip, index, onDelete }: AnimatedTripCardProps) {
+  return (
+    <Animated.View entering={FadeInDown.delay(index * 80).springify()}>
+      <TripCard trip={trip} onDelete={onDelete} />
+    </Animated.View>
+  );
+}
 ```
 
-**Requirements:**
+```tsx
+// app/(tabs)/index.tsx - fragment
+import Animated from 'react-native-reanimated';
 
-1. On mount, call `Location.requestForegroundPermissionsAsync()`.
-2. If `status !== 'granted'` - set `error` to a descriptive message (e.g. `"Location permission denied"`), set `loading` to `false`.
-3. If permission is granted - call `Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })`.
-4. Store the result in `location`, set `loading` to `false`.
-5. Wrap the logic in `try/catch` - on exception set `error` to `e.message`.
-6. All logic inside a `useEffect` with an empty dependency array `[]`.
-7. Return `{ location, error, loading }`.
+<Animated.FlatList
+  data={trips}
+  keyExtractor={(item) => item.id}
+  renderItem={({ item, index }) => (
+    <AnimatedTripCard
+      trip={item}
+      index={index}
+      onDelete={deleteTrip}
+    />
+  )}
+/>
+```
 
-**⚠ Pitfall:** On the Android emulator you must set a location manually: Extended Controls (…) → Location → enter coordinates. On iOS Simulator: Debug → Location → Custom Location. Without this, `getCurrentPositionAsync` may hang indefinitely.
-
----
-
-## Step 2 - New "Map" Tab with `<MapView>`
-
-**Goal:** Add a new tab featuring a full-screen map.
-
-**Files:** `app/(tabs)/map.tsx`, `app/(tabs)/_layout.tsx`
-
-**Requirements:**
-
-1. In `_layout.tsx` add a new `<Tabs.Screen>` with `name="map"`, title "Map", and a map icon (e.g. `map` from Ionicons or `map-pin`).
-2. In `map.tsx` use the `useLocation()` hook from Step 1.
-3. Render `<MapView>` from `react-native-maps`:
-   ```tsx
-   import MapView from 'react-native-maps';
-   ```
-4. `MapView` must have `style={{ flex: 1 }}` - **the parent must also have `flex: 1`**, otherwise the map has 0 height and is invisible.
-5. Set `initialRegion`:
-   - If `location` is available — use `location.coords.latitude` / `longitude` with a delta of `0.1`.
-   - If unavailable - default to Warsaw: `{ latitude: 52.2297, longitude: 21.0122, latitudeDelta: 0.1, longitudeDelta: 0.1 }`.
-6. While `loading === true` - show a spinner (`<ActivityIndicator>`).
-7. When `error` is set - show `<ErrorView>` with the error message and an "Open Settings" button that calls `Linking.openSettings()`.
-
-**⚠ Pitfall:** `MapView` with `style={{ flex: 1 }}` inside a `<View>` without `flex: 1` = invisible map (0px height). Make sure the entire parent chain has `flex: 1`.
+> **Pitfall:** The standard React Native `FlatList` ignores the `entering` prop on its items. You must use `Animated.FlatList` from reanimated.
 
 ---
 
-## Step 3 - Extend `Trip` with `coordinates`
+## Step 3 - Tap Feedback (Scale Spring)
 
-**Goal:** Add an optional coordinates field to the trip data model.
+**Goal:** the card "bounces" on tap - a native-feeling touch interaction.
 
-**Files:** `types/trip.ts`, `types/tripSchema.ts`
+**Files:** `components/AnimatedTripCard.tsx`
 
 **Requirements:**
+1. Add `Gesture.Tap()` from `react-native-gesture-handler`.
+2. On `onBegin` shrink scale to `0.97`, on `onFinalize` return to `1.0`.
+3. Wrap the card in `GestureDetector` inside `Animated.View`.
 
-1. In `types/trip.ts` extend the `TripData` interface:
-   ```ts
-   coordinates?: {
-     latitude: number;
-     longitude: number;
-   };
-   ```
-2. In `types/tripSchema.ts` add an optional field to the Zod schema:
-   ```ts
-   coordinates: z.object({
-     latitude: z.number(),
-     longitude: z.number(),
-   }).optional(),
-   ```
-3. For testing, manually add coordinates to 2-3 existing trips in your test data or in `TripContext` (e.g. Paris: `48.8566, 2.3522`, Tokyo: `35.6762, 139.6503`, Rome: `41.9028, 12.4964`).
-4. The `coordinates` field is optional - not every trip needs one.
+```tsx
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+} from 'react-native-reanimated';
 
-**⚠ Pitfall:** If you use AsyncStorage for trip persistence, legacy data will lack the `coordinates` field. Your code must handle this - always filter with `.filter(t => t.coordinates)` before mapping to markers.
+export function AnimatedTripCard({ trip, index, onDelete }: AnimatedTripCardProps) {
+  const scale = useSharedValue(1);
+
+  const tapGesture = Gesture.Tap()
+    .onBegin(() => {
+      scale.value = withSpring(0.97, { damping: 15, stiffness: 400 });
+    })
+    .onFinalize(() => {
+      scale.value = withSpring(1.0, { damping: 10, stiffness: 200 });
+    });
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  return (
+    <Animated.View
+      entering={FadeInDown.delay(index * 80).springify()}
+      style={animatedStyle}
+    >
+      <GestureDetector gesture={tapGesture}>
+        <TripCard trip={trip} onDelete={onDelete} />
+      </GestureDetector>
+    </Animated.View>
+  );
+}
+```
 
 ---
 
-## Step 4 - Trip Markers on the Map
+## Step 4 - Layout Animations (Smooth Removal)
 
-**Goal:** Display a pin on the map for every trip that has coordinates.
+**Goal:** when a card is deleted the remaining cards smoothly fill the gap.
 
-**File:** `app/(tabs)/map.tsx`
+**Files:** `components/AnimatedTripCard.tsx`, `app/(tabs)/index.tsx`
 
 **Requirements:**
+1. Add `exiting={FadeOutLeft.springify()}` to the card's `Animated.View`.
+2. Add `itemLayoutAnimation={LinearTransition.springify()}` to `Animated.FlatList`.
+3. Ensure `keyExtractor` returns stable, unique keys.
 
-1. Retrieve the trip list from `TripContext` (`useTrips()`).
-2. Filter trips that have `coordinates`:
-   ```tsx
-   const tripsWithCoords = useMemo(
-     () => trips.filter(t => t.coordinates),
-     [trips]
-   );
-   ```
-3. Render a `<Marker>` for each trip:
-   ```tsx
-   {tripsWithCoords.map(trip => (
-     <Marker
-       key={trip.id}
-       coordinate={trip.coordinates!}
-       title={trip.title}
-       description={trip.destination}
-     />
-   ))}
-   ```
-4. Each marker shows the default pin with `title` and `description` visible on tap.
-5. Use `useMemo` on the filtered list to avoid unnecessary recalculations.
+```tsx
+// Animated.View on the card
+<Animated.View
+  entering={FadeInDown.delay(index * 80).springify()}
+  exiting={FadeOutLeft.springify()}
+  style={animatedStyle}
+>
 
-**⚠ Pitfall:** Do not forget `key={trip.id}` on `<Marker>`. Without a unique key React cannot efficiently update markers and you may see ghost markers after deleting a trip.
+// Animated.FlatList
+<Animated.FlatList
+  data={trips}
+  keyExtractor={(item) => item.id}
+  itemLayoutAnimation={LinearTransition.springify()}
+  renderItem={...}
+/>
+```
+
+> **Pitfall:** `Layout.springify()` (old API) is deprecated. Use `itemLayoutAnimation` on the FlatList with `LinearTransition.springify()` or `CurvedTransition`.
 
 ---
 
-## Step 5 - Custom Callout with Thumbnail
+## Step 5 - Swipe-to-Delete (Pan Gesture)
 
-**Goal:** When a marker is tapped, show a callout containing a photo thumbnail, title, and destination. Tapping the callout navigates to the trip detail screen.
+**Goal:** swiping a card left past a threshold removes it with animation.
 
-**File:** `app/(tabs)/map.tsx`
+**Files:** `components/AnimatedTripCard.tsx`
 
 **Requirements:**
+1. Add `useSharedValue` for `translateX`.
+2. Configure `Gesture.Pan()` - update `translateX` in `onUpdate`, check threshold (-80px) in `onEnd`.
+3. If threshold exceeded: animate to `-500`, then call `runOnJS(onDelete)(trip.id)`.
+4. If threshold not exceeded: spring back to `0`.
 
-1. Import `Callout` from `react-native-maps`:
-   ```tsx
-   import MapView, { Marker, Callout } from 'react-native-maps';
-   ```
-2. Inside each `<Marker>` add a `<Callout>`:
-   ```tsx
-   <Marker
-     key={trip.id}
-     coordinate={trip.coordinates!}
-   >
-     <Callout onPress={() => router.push(`/trip/${trip.id}`)}>
-       <View style={styles.calloutContainer}>
-         <Image
-           source={{ uri: trip.imageUri }}
-           style={styles.calloutImage}
-         />
-         <View style={styles.calloutText}>
-           <Text style={styles.calloutTitle}>{trip.title}</Text>
-           <Text style={styles.calloutDestination}>{trip.destination}</Text>
-         </View>
-       </View>
-     </Callout>
-   </Marker>
-   ```
-3. Thumbnail: 60×60 px, `borderRadius: 8`.
-4. Callout container: `flexDirection: 'row'`, `alignItems: 'center'`, `gap: 8`, max width ~200 px.
-5. `onPress` on `<Callout>` navigates to `trip/[id].tsx` via `router.push()`.
+```tsx
+import { runOnJS } from 'react-native-reanimated';
 
-**⚠ Pitfall:** On Android, `Callout` **does not support** interactive children (e.g. `TouchableOpacity`, `Pressable`). The only way to handle taps is `onPress` directly on `<Callout>` or `onCalloutPress` on `<Marker>`. Do not place buttons inside a callout - they will not work.
+export function AnimatedTripCard({ trip, index, onDelete }: AnimatedTripCardProps) {
+  const translateX = useSharedValue(0);
+  const scale = useSharedValue(1);
+
+  const panGesture = Gesture.Pan()
+    .activeOffsetX([-10, 10])
+    .onUpdate((e) => {
+      if (e.translationX < 0) {
+        translateX.value = e.translationX;
+      }
+    })
+    .onEnd((e) => {
+      if (e.translationX < -80) {
+        translateX.value = withTiming(-500, { duration: 300 }, (finished) => {
+          if (finished) runOnJS(onDelete)(trip.id);
+        });
+      } else {
+        translateX.value = withSpring(0);
+      }
+    });
+
+  const tapGesture = Gesture.Tap()
+    .onBegin(() => { scale.value = withSpring(0.97); })
+    .onFinalize(() => { scale.value = withSpring(1.0); });
+
+  // Compose: tap and pan work simultaneously
+  const composedGesture = Gesture.Simultaneous(tapGesture, panGesture);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: translateX.value },
+      { scale: scale.value },
+    ],
+  }));
+
+  return (
+    <Animated.View
+      entering={FadeInDown.delay(index * 80).springify()}
+      exiting={FadeOutLeft.springify()}
+    >
+      <GestureDetector gesture={composedGesture}>
+        <Animated.View style={animatedStyle}>
+          <TripCard trip={trip} onDelete={onDelete} />
+        </Animated.View>
+      </GestureDetector>
+    </Animated.View>
+  );
+}
+```
+
+> **Pitfall:** `runOnJS` is required - you cannot call `onDelete` (a JS function) directly from the `.onEnd` callback because it runs on the UI thread.
 
 ---
 
-## Step 6 - `fitToCoordinates`
+## Step 6 - Animated FAB (Floating Action Button)
 
-**Goal:** After trips load, automatically adjust the map viewport so all markers are visible.
+**Goal:** a "+" button that appears with animation and rotates on tap.
 
-**File:** `app/(tabs)/map.tsx`
+**Files:** `components/FAB.tsx`, `app/(tabs)/index.tsx`
 
 **Requirements:**
+1. Use `withSpring` to animate scale on mount.
+2. Add `useSharedValue` for rotation - rotate 45 degrees on tap.
+3. Accept `onPress` as a prop, call it via `runOnJS`.
 
-1. Create a map ref:
-   ```tsx
-   const mapRef = useRef<MapView>(null);
-   ```
-2. Pass the ref to `<MapView ref={mapRef}>`.
-3. Add a `useEffect` that reacts to trip list changes:
-   ```tsx
-   useEffect(() => {
-     const coords = tripsWithCoords.map(t => t.coordinates!);
-     if (coords.length > 0 && mapRef.current) {
-       mapRef.current.fitToCoordinates(coords, {
-         edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
-         animated: true,
-       });
-     }
-   }, [tripsWithCoords]);
-   ```
-4. **The `coords.length > 0` guard is mandatory** - `fitToCoordinates` with an empty array crashes the app.
-5. 50 px padding on each edge - markers near screen edges are hard to tap.
+```tsx
+// components/FAB.tsx
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  withTiming,
+  runOnJS,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { useEffect } from 'react';
 
-**⚠ Pitfall:** `fitToCoordinates` with a **single** marker zooms to maximum (you see the street but lose context). STRETCH solution: when `coords.length === 1`, set the region manually with a minimum delta (`latitudeDelta: 0.05`).
+interface FABProps {
+  onPress: () => void;
+}
+
+export function FAB({ onPress }: FABProps) {
+  const scale = useSharedValue(0);
+  const rotation = useSharedValue(0);
+  const isOpen = useSharedValue(false);
+
+  useEffect(() => {
+    scale.value = withSpring(1, { damping: 12, stiffness: 200 });
+  }, []);
+
+  const tapGesture = Gesture.Tap().onEnd(() => {
+    isOpen.value = !isOpen.value;
+    rotation.value = withSpring(isOpen.value ? 45 : 0, { damping: 10 });
+    runOnJS(onPress)();
+  });
+
+  const fabStyle = useAnimatedStyle(() => ({
+    transform: [
+      { scale: scale.value },
+      { rotate: `${rotation.value}deg` },
+    ],
+  }));
+
+  return (
+    <GestureDetector gesture={tapGesture}>
+      <Animated.View style={[styles.fab, fabStyle]}>
+        <Text style={styles.fabIcon}>+</Text>
+      </Animated.View>
+    </GestureDetector>
+  );
+}
+
+const styles = StyleSheet.create({
+  fab: {
+    position: 'absolute',
+    bottom: 24,
+    right: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#61DAFB',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+  },
+  fabIcon: {
+    fontSize: 28,
+    color: '#0A1628',
+    fontWeight: 'bold',
+    lineHeight: 30,
+  },
+});
+```
 
 ---
 
-## Step 7 - Geocoding
+## Step 7: Skeleton Loading (Shimmer)
 
-**Goal:** Automatically fetch coordinates from the destination name when adding a trip.
+**Goal:** display an animated placeholder while API data loads.
 
-**File:** `components/AddTripForm.tsx`
+**Files:** `components/SkeletonCard.tsx`, `app/(tabs)/explore.tsx`
 
 **Requirements:**
+1. Use `useSharedValue` + `withRepeat(withTiming(...), -1, true)` for the shimmer animation.
+2. Interpolate the value to opacity (e.g. 0.3 → 1.0 → 0.3).
+3. Render several gray rectangles shaped like a card.
 
-1. After the user fills in the `destination` field, call `Location.geocodeAsync(destination)`.
-2. `geocodeAsync` returns an array of `{ latitude, longitude }[]` - take the first result.
-3. If geocoding returns results - save `coordinates` to the Trip object.
-4. If geocoding finds nothing - do not block saving the trip, simply leave `coordinates` unset.
-5. Wrap in `try/catch` - geocoding requires an internet connection.
+```tsx
+// components/SkeletonCard.tsx
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withTiming,
+  Easing,
+} from 'react-native-reanimated';
+import { useEffect } from 'react';
 
-**⚠ Pitfall:** `Location.geocodeAsync` uses the native geocoder (Apple/Google) - it will not work offline. Do not show the user an error when geocoding fails - the trip should still save.
+export function SkeletonCard() {
+  const shimmer = useSharedValue(0.3);
+
+  useEffect(() => {
+    shimmer.value = withRepeat(
+      withTiming(1.0, { duration: 900, easing: Easing.inOut(Easing.ease) }),
+      -1,    // infinite repetitions
+      true   // reverse (pulsing effect)
+    );
+  }, []);
+
+  const shimmerStyle = useAnimatedStyle(() => ({
+    opacity: shimmer.value,
+  }));
+
+  return (
+    <Animated.View style={[styles.card, shimmerStyle]}>
+      <View style={styles.imagePlaceholder} />
+      <View style={styles.titlePlaceholder} />
+      <View style={styles.subtitlePlaceholder} />
+    </Animated.View>
+  );
+}
+```
+
+> **Pitfall:** `withRepeat(-1, true)` - `-1` means infinite repetitions, `true` enables reverse (breathing shimmer). Without `true`, the shimmer jumps abruptly back to the start value.
 
 ---
 
-## Step 8 - Custom Marker Icon
+## Step 8: Shared Element Transition
 
-**Goal:** Replace the default pin with a circular trip photo thumbnail as the marker icon.
+**Goal:** the photo from the list card "flows" animatedly to the detail screen.
 
-**File:** `app/(tabs)/map.tsx`
+**Files:** `components/AnimatedTripCard.tsx`, `app/trip/[id].tsx`
 
 **Requirements:**
+1. Add `sharedTransitionTag` to the Image on the list card.
+2. Add the same `sharedTransitionTag` to the Image on the detail screen.
+3. The tag must be unique per trip (e.g. `trip-image-${trip.id}`).
 
-1. Instead of the default pin, render a custom `<View>` inside `<Marker>`:
-   ```tsx
-   <Marker key={trip.id} coordinate={trip.coordinates!}>
-     <View style={styles.customMarker}>
-       <Image
-         source={{ uri: trip.imageUri }}
-         style={styles.markerImage}
-       />
-     </View>
-     <Callout onPress={() => router.push(`/trip/${trip.id}`)}>
-       {/* ... */}
-     </Callout>
-   </Marker>
-   ```
-2. Thumbnail: 40×40 px, `borderRadius: 20` (circle), `borderWidth: 2`, `borderColor: Colors.accent`.
-3. **Set `tracksViewChanges={false}`** on `<Marker>` - without this the map re-renders the marker every frame, causing noticeable FPS drops with 10+ markers.
+```tsx
+// On list card (AnimatedTripCard.tsx)
+import Animated from 'react-native-reanimated';
 
-**⚠ Pitfall:** `tracksViewChanges={false}` means changing `imageUri` will not update the marker icon. If a trip's image changes, you must temporarily set `tracksViewChanges={true}` and revert to `false` after the image loads.
+<Animated.Image
+  source={{ uri: trip.imageUri }}
+  sharedTransitionTag={`trip-image-${trip.id}`}
+  style={styles.cardImage}
+/>
+
+// On detail screen (app/trip/[id].tsx)
+<Animated.Image
+  source={{ uri: trip.imageUri }}
+  sharedTransitionTag={`trip-image-${trip.id}`}
+  style={styles.detailImage}
+/>
+```
+
+> **Pitfall:** `sharedTransitionTag` is case-sensitive. `"trip-image-1"` and `"Trip-Image-1"` are different tags - the transition will not work.
 
 ---
 
-## Step 9 - Dark Mode Map
+## Step 9: Parallax Header
 
-**Goal:** Add a dark map style and a toggle in the UI.
+**Goal:** the header image on the detail screen scales and translates on scroll.
 
-**File:** `app/(tabs)/map.tsx`
+**Files:** `app/trip/[id].tsx`
 
 **Requirements:**
+1. Use `Animated.ScrollView` (from reanimated) and `useScrollViewOffset` to track scroll position.
+2. Interpolate scroll offset to `translateY` and `scale` of the header.
+3. The header should scroll slower than the content (parallax effect).
 
-1. Download a dark mode JSON style from https://mapstyle.withgoogle.com/ or https://snazzymaps.com/.
-2. Save the JSON in `constants/mapStyle.ts` (export const `darkMapStyle`).
-3. Pass it to `<MapView customMapStyle={isDark ? darkMapStyle : undefined}>`.
-4. Add a toggle (e.g. `Switch` or an icon) in the top-right corner of the map to switch styles.
-5. Note: `customMapStyle` works **only with the Google Maps provider** (Android). On iOS with Apple Maps this prop is ignored — use `mapType` or `userInterfaceStyle="dark"` (iOS 13+).
+```tsx
+import Animated, {
+  useAnimatedRef,
+  useScrollViewOffset,
+  useAnimatedStyle,
+  interpolate,
+  Extrapolation,
+} from 'react-native-reanimated';
 
-**⚠ Pitfall:** Style JSON from external services must be an array of objects `{ featureType, elementType, stylers }`. Make sure the format is correct — a malformed file results in an unstyled map with no error.
+const HEADER_HEIGHT = 280;
+
+export default function TripDetail() {
+  const scrollRef = useAnimatedRef<Animated.ScrollView>();
+  const scrollY = useScrollViewOffset(scrollRef);
+
+  const headerStyle = useAnimatedStyle(() => {
+    const translateY = interpolate(
+      scrollY.value,
+      [-HEADER_HEIGHT, 0, HEADER_HEIGHT],
+      [-HEADER_HEIGHT / 2, 0, HEADER_HEIGHT * 0.75],
+      Extrapolation.CLAMP
+    );
+    const scale = interpolate(
+      scrollY.value,
+      [-HEADER_HEIGHT, 0],
+      [2, 1],
+      Extrapolation.CLAMP
+    );
+    return { transform: [{ translateY }, { scale }] };
+  });
+
+  return (
+    <Animated.ScrollView ref={scrollRef}>
+      <Animated.View style={[styles.header, headerStyle]}>
+        <Image source={{ uri: trip.imageUri }} style={styles.headerImage} />
+      </Animated.View>
+      {/* rest of content */}
+    </Animated.ScrollView>
+  );
+}
+```
 
 ---
 
-## Step 10 - Marker Clustering
+## Step 10: Gesture-Based Rating
 
-**Goal:** When there are many markers, group nearby ones into clusters.
+**Goal:** drag a finger across the stars to set the rating instead of tapping individual stars.
+
+**Files:** `components/RatingStars.tsx`
 
 **Requirements:**
-
-1. Install `react-native-map-clustering`:
-   ```bash
-   npm install react-native-map-clustering
-   ```
-2. Replace `<MapView>` with the clustered variant (or wrap `MapView` from the library):
-   ```tsx
-   import MapView from 'react-native-map-clustering';
-   ```
-3. Each cluster displays the count of grouped markers.
-4. Tapping a cluster zooms into the region encompassing the grouped markers.
-5. Add 10+ trips with different coordinates to test clustering.
-
-**⚠ Pitfall:** `react-native-map-clustering` wraps `MapView` — if you import `MapView` from this package, do not import it simultaneously from `react-native-maps` in the same file. `Marker` and `Callout` are still imported from `react-native-maps`.
+1. Measure the stars container width via `onLayout`.
+2. Add `Gesture.Pan()` - in `onUpdate` compute rating from `translationX / (containerWidth / maxStars)`.
+3. Call `runOnJS(onRatingChange)(newRating)` on each change.
 
 ---
 
-## Step 11 - Reverse Geocoding on Trip Detail
+## Step 11: Staggered Grid Animation
 
-**Goal:** On the trip detail screen, display the full address alongside the destination name.
+**Goal:** cards on the Explore tab appear in a cascading sequence.
 
-**File:** `app/trip/[id].tsx`
+**Files:** `app/(tabs)/explore.tsx`
 
 **Requirements:**
+1. Wrap each `DestinationCard` in `Animated.View` with `entering`.
+2. Use `FadeInDown.delay(index * 100).springify()`.
+3. Add extra offset delay for the right column (e.g. `index * 100 + (column * 50)`).
 
-1. If the trip has `coordinates`, call `Location.reverseGeocodeAsync(coordinates)` on mount.
-2. `reverseGeocodeAsync` returns an array of objects with fields: `street`, `city`, `region`, `country`, `postalCode`.
-3. Format the address and display it below the destination name (e.g. "Champs-Élysées, Paris, France").
-4. Show a spinner while the address is loading.
-5. If reverse geocoding fails - display only the destination name (no error).
+---
 
-**⚠ Pitfall:** `reverseGeocodeAsync` may return `null` for some fields (e.g. `street` for a wilderness location). Check each field before using it and join only non-empty values.
+## Step 12: Heart Animation (Like)
+
+**Goal:** the like button on a card explodes with a spring animation and changes color.
+
+**Files:** `components/AnimatedTripCard.tsx` or a new `components/LikeButton.tsx`
+
+**Requirements:**
+1. `useSharedValue` for heart scale and color.
+2. On tap: `withSequence(withSpring(1.4), withSpring(1.0))`.
+3. Smooth color transition: interpolate from gray to accent red.
 
 ---
