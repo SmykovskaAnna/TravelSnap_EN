@@ -1,6 +1,7 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { TripProvider } from '@/contexts/TripContext';
 import { Colors } from '@/constants/Colors';
@@ -12,6 +13,7 @@ const darkHeaderOptions = {
 
 export default function RootLayout() {
   return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
     <TripProvider>
       <Stack screenOptions={darkHeaderOptions}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
@@ -46,5 +48,6 @@ export default function RootLayout() {
       </Stack>
       <StatusBar style="light" />
     </TripProvider>
+    </GestureHandlerRootView>
   );
 }

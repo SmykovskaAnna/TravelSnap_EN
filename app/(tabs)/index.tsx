@@ -1,27 +1,22 @@
 import { useCallback, useMemo } from 'react';
 import {
   ActivityIndicator,
-  FlatList,
   Platform,
   StyleSheet,
-  Pressable,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import Animated, { LinearTransition } from 'react-native-reanimated';
 
 import { useTrips } from '@/contexts/TripContext';
-import { TripCard } from '@/components/TripCard';
+import { AnimatedTripCard } from '@/components/AnimatedTripCard';
+import { FAB } from '@/components/FAB';
 import ScreenHeader from '@/components/ScreenHeader';
 import EmptyState from '@/components/ui/EmptyState';
 import TripStats from '@/components/TripStats';
 import { Colors } from '@/constants/Colors';
 import type { Trip } from '@/types/trip';
-
-// Cards without image: ~120px; with image: ~300px.
-// Heights vary, so getItemLayout is skipped to avoid blank-space glitches.
-const INITIAL_NUM_TO_RENDER = 10;
 
 export default function HomeScreen() {
   const { trips, deleteTrip, loading } = useTrips();
@@ -47,11 +42,12 @@ export default function HomeScreen() {
   );
 
   const renderItem = useCallback(
-    ({ item }: { item: Trip }) => (
-      <TripCard
+    ({ item, index }: { item: Trip; index: number }) => (
+      <AnimatedTripCard
         trip={item}
+        index={index}
         onPress={handleTripPress}
-        onDelete={() => handleDelete(item.id)}
+        onDelete={handleDelete}
       />
     ),
     [handleTripPress, handleDelete]
@@ -69,11 +65,12 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <FlatList
+      <Animated.FlatList
         data={sortedTrips}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
-        initialNumToRender={INITIAL_NUM_TO_RENDER}
+        itemLayoutAnimation={LinearTransition.springify()}
+        initialNumToRender={10}
         maxToRenderPerBatch={8}
         windowSize={5}
         removeClippedSubviews={Platform.OS === 'android'}
@@ -93,12 +90,7 @@ export default function HomeScreen() {
         }
       />
 
-      <Pressable
-        style={styles.fab}
-        onPress={() => router.push('/add-trip')}
-      >
-        <Ionicons name="add" size={28} color={Colors.background} />
-      </Pressable>
+      <FAB onPress={() => router.push('/add-trip')} />
     </SafeAreaView>
   );
 }
@@ -116,21 +108,5 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
     paddingBottom: 96,
-  },
-  fab: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 6,
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
   },
 });

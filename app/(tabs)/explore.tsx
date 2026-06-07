@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { FlatList, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import DestinationCard from '@/components/DestinationCard';
 import { Colors } from '@/constants/Colors';
@@ -19,7 +20,11 @@ export default function ExploreScreen() {
         key={listKey}
         data={POPULAR}
         keyExtractor={(city) => city}
-        renderItem={({ item }) => <DestinationCard city={item} />}
+        renderItem={({ item, index }) => (
+          <Animated.View entering={FadeInDown.delay(index * 100).springify()}>
+            <DestinationCard city={item} />
+          </Animated.View>
+        )}
         contentContainerStyle={styles.list}
         refreshing={false}
         onRefresh={() => setListKey((k) => k + 1)}
