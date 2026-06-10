@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from 'react';
 import {
-  ActivityIndicator,
   Platform,
   StyleSheet,
   View,
@@ -9,9 +8,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import Animated, { LinearTransition } from 'react-native-reanimated';
 
-import { useTrips } from '@/contexts/TripContext';
+import { useTripsQuery } from '@/hooks/useTripsQuery';
+import { useDeleteTrip } from '@/hooks/useTripMutations';
 import { AnimatedTripCard } from '@/components/AnimatedTripCard';
 import { FAB } from '@/components/FAB';
+import { SkeletonCard } from '@/components/SkeletonCard';
 import ScreenHeader from '@/components/ScreenHeader';
 import EmptyState from '@/components/ui/EmptyState';
 import TripStats from '@/components/TripStats';
@@ -19,7 +20,8 @@ import { Colors } from '@/constants/Colors';
 import type { Trip } from '@/types/trip';
 
 export default function HomeScreen() {
-  const { trips, deleteTrip, loading } = useTrips();
+  const { data: trips = [], isLoading: loading } = useTripsQuery();
+  const { mutate: deleteTrip } = useDeleteTrip();
   const router = useRouter();
 
   const sortedTrips = useMemo(
@@ -57,7 +59,9 @@ export default function HomeScreen() {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={Colors.primary} />
+          <SkeletonCard />
+          <SkeletonCard />
+          <SkeletonCard />
         </View>
       </SafeAreaView>
     );

@@ -1,8 +1,7 @@
 import { StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 
-import { useFetch } from '@/hooks/useFetch';
-import { UNSPLASH_ACCESS_KEY, UNSPLASH_BASE_URL } from '@/constants/api';
+import { useUnsplashQuery } from '@/hooks/useUnsplashQuery';
 import type { UnsplashResponse } from '@/types/unsplash';
 import { Colors } from '@/constants/Colors';
 
@@ -11,12 +10,7 @@ interface DestinationCardProps {
 }
 
 export default function DestinationCard({ city }: DestinationCardProps) {
-  const url = `${UNSPLASH_BASE_URL}/search/photos?query=${encodeURIComponent(city)}&per_page=1`;
-  const init: RequestInit = {
-    headers: { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` },
-  };
-
-  const { data, loading } = useFetch<UnsplashResponse>(url, init);
+  const { data, isLoading: loading } = useUnsplashQuery(city);
 
   if (loading) {
     return <View style={styles.skeleton} />;

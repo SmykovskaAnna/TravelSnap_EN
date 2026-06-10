@@ -1,338 +1,605 @@
-# Task 11 - Maps & Location
+# Task 13 - Networking & Offline
+
+---
 
 ## Goal
 
-Add a new **Map** tab to TravelSnap featuring a full-screen map that displays pins (markers) for every trip that has coordinates. The user can tap a marker to reveal a callout with a thumbnail and title, then navigate to the trip details. The map automatically adjusts its viewport to fit all markers.
+After completing this task the TravelSnap app will:
+
+- manage server state via **TanStack Query** (cache, stale-while-revalidate, retry)
+- persist the query cache across app restarts (**AsyncStorage persister**)
+- display an animated banner when there is no internet connection (**OfflineBanner**)
+- pause HTTP queries when offline (`enabled: isConnected`)
+- perform **optimistic updates** for adding and deleting trips
+- **roll back** optimistic changes if the storage write fails
+- replace the custom `useFetch` hook with `useQuery` from TanStack Query
 
 ---
 
-## Step 0 - Setup
+## Step 0 - Installation & QueryClient `[CORE]`
 
-**Goal:** Install dependencies and configure the Google Maps API key.
+### 0a. Install dependencies
 
 ```bash
-npx expo install expo-location react-native-maps
+npx expo install @tanstack/react-query \
+  @tanstack/query-async-storage-persister \
+  @tanstack/react-query-persist-client \
+  @react-native-community/netinfo
 ```
 
-**Requirements:**
+### 0b. Create `lib/queryClient.ts`
 
-1. Install both packages with a single command.
-2. For Android: add a Google Maps API key in `app.json` (or `app.config.ts`):
-   ```json
-   {
-     "expo": {
-       "android": {
-         "config": {
-           "googleMaps": {
-             "apiKey": "YOUR_GOOGLE_MAPS_API_KEY"
-           }
-         }
-       }
-     }
-   }
-   ```
-3. For iOS: Apple Maps works without a key - no extra configuration needed.
-4. Rebuild after installing: `npx expo run:android` or `npx expo run:ios` (react-native-maps does not work in Expo Go on Android with the Google provider).
+```tsx
+import { QueryClient } from '@tanstack/react-query';
 
-**⚠ Pitfall:** The Google Maps API key must be **unrestricted** initially. A restricted key results in a blank map with zero console errors. Restrict it only after confirming the map renders.
+// Create OUTSIDE component - one instance for the whole app lifecycle
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime:  1000 * 60 * 5,              // 5 min - data considered fresh
+      gcTime:     1000 * 60 * 60 * 24 * 7,   // 7 days - must match persister maxAge
+      retry: 3,
+      retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 30_000),
+    },
+    mutations: {
+      retry: 0, // do not retry mutations automatically
+    },
+  },
+});
+```
+
+> **Pitfall:** `gcTime` must be **equal to or greater than** the persister's `maxAge` (7 days in Step 0d).
+> The default `gcTime` is only 5 minutes - data would be garbage-collected from memory
+> before the persister has a chance to write it to AsyncStorage.
+
+### 0c. Create `utils/persister.ts`
+
+```tsx
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
+
+export const persister = createAsyncStoragePersister({
+  storage: AsyncStorage,
+});
+```
+
+### 0d. Create `providers/QueryProvider.tsx`
+
+```tsx
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
+import { queryClient } from '../lib/queryClient';
+import { persister }    from '../utils/persister';
+
+const SEVEN_DAYS = 1000 * 60 * 60 * 24 * 7;
+
+export function QueryProvider({ children }: { children: React.ReactNode }) {
+  return (
+    <PersistQueryClientProvider
+      client={queryClient}
+      persistOptions={{ persister, maxAge: SEVEN_DAYS }}
+    >
+      {children}
+    </PersistQueryClientProvider>
+  );
+}
+```
+
+> **Pitfall:** Use `PersistQueryClientProvider`, not the regular `QueryClientProvider`.
+> The regular provider silently ignores `persistOptions` - no compile error, but persistence won't work.
+
+### 0e. Wrap `app/_layout.tsx` with QueryProvider
+
+```tsx
+import { QueryProvider } from '../providers/QueryProvider';
+
+export default function RootLayout() {
+  return (
+    <QueryProvider>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <Stack>
+          {/* rest of layout - OfflineBanner added in Step 5 */}
+        </Stack>
+      </GestureHandlerRootView>
+    </QueryProvider>
+  );
+}
+```
 
 ---
 
-## Step 1 - Custom Hook `useLocation`
+## Step 1 - useTripsQuery `[CORE]`
 
-**Goal:** Create a reusable hook that retrieves the user's current location.
+Create `hooks/useTripsQuery.ts`:
 
-**File:** `hooks/useLocation.ts`
+```tsx
+import { useQuery } from '@tanstack/react-query';
+import { loadTrips } from '../utils/tripStorage';
+import type { Trip } from '../types/trip';
 
-**Signature:**
+export function useTripsQuery() {
+  return useQuery<Trip[]>({
+    queryKey: ['trips'],
+    queryFn:  loadTrips,
+    staleTime: Infinity, // local data - never stale, invalidate manually after mutation
+  });
+}
+```
 
-```ts
-import { LocationObject } from 'expo-location';
+Update `app/(tabs)/index.tsx` - replace direct TripContext reads with `useTripsQuery`:
 
-interface UseLocationResult {
-  location: LocationObject | null;
-  error: string | null;
-  loading: boolean;
+```tsx
+import { useTripsQuery } from '../../hooks/useTripsQuery';
+
+export default function HomeScreen() {
+  const { data: trips = [], isLoading } = useTripsQuery();
+
+  if (isLoading) return <SkeletonCard />;
+
+  return (
+    <Animated.FlatList
+      data={trips}
+      keyExtractor={(item) => item.id}
+      renderItem={({ item, index }) => (
+        <AnimatedTripCard trip={item} index={index} />
+      )}
+      itemLayoutAnimation={LinearTransition.springify()}
+    />
+  );
+}
+```
+
+> **Pitfall:** `staleTime: Infinity` means `useTripsQuery` will never automatically refetch.
+> You must call `queryClient.invalidateQueries({ queryKey: ['trips'] })` in the `onSettled`
+> callback of every mutation that touches the trips list.
+
+---
+
+## Step 2 - useMutation addTrip (optimistic) `[CORE]`
+
+Create `hooks/useTripMutations.ts` (addTrip section):
+
+```tsx
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { saveTrip } from '../utils/tripStorage';
+import type { Trip, TripData } from '../types/trip';
+
+export function useAddTrip() {
+  const qc = useQueryClient();
+
+  return useMutation<Trip, Error, TripData>({
+    mutationFn: saveTrip,
+
+    onMutate: async (newData) => {
+      // Cancel outgoing refetches to avoid overwriting the optimistic update
+      await qc.cancelQueries({ queryKey: ['trips'] });
+
+      // Save snapshot for potential rollback
+      const previous = qc.getQueryData<Trip[]>(['trips']) ?? [];
+
+      // Optimistically add the new trip to the cache
+      const optimistic: Trip = {
+        ...newData,
+        id: `optimistic-${Date.now()}`,
+      };
+      qc.setQueryData<Trip[]>(['trips'], [optimistic, ...previous]);
+
+      // Return context - passed as 3rd arg to onError
+      return { previous };
+    },
+
+    onError: (_err, _vars, ctx) => {
+      // Rollback to snapshot on failure
+      if (ctx?.previous) {
+        qc.setQueryData(['trips'], ctx.previous);
+      }
+    },
+
+    onSettled: () => {
+      // Always invalidate after success OR error - sync with real storage
+      qc.invalidateQueries({ queryKey: ['trips'] });
+    },
+  });
+}
+```
+
+> **Pitfall:** `onMutate` **must return** `{ previous }`.
+> This object arrives as `context` (third argument) in `onError`.
+> Without `return`, rollback has nothing to restore.
+
+> **Pitfall:** Do not call `invalidateQueries` in `onSuccess` when using optimistic updates.
+> It causes a double UI update - call it only in `onSettled`.
+
+---
+
+## Step 3 - useMutation deleteTrip (optimistic) `[CORE]`
+
+Add to `hooks/useTripMutations.ts`:
+
+```tsx
+// Add deleteTrip to the import at the top of the file:
+import { saveTrip, deleteTrip } from '../utils/tripStorage';
+
+export function useDeleteTrip() {
+  const qc = useQueryClient();
+
+  return useMutation<void, Error, string>({
+    mutationFn: deleteTrip, // already exists in utils/tripStorage.ts
+
+    onMutate: async (tripId) => {
+      await qc.cancelQueries({ queryKey: ['trips'] });
+      const previous = qc.getQueryData<Trip[]>(['trips']) ?? [];
+
+      // Optimistically remove from cache
+      qc.setQueryData<Trip[]>(
+        ['trips'],
+        previous.filter((t) => t.id !== tripId)
+      );
+
+      return { previous };
+    },
+
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous) {
+        qc.setQueryData(['trips'], ctx.previous);
+      }
+    },
+
+    onSettled: () => qc.invalidateQueries({ queryKey: ['trips'] }),
+  });
+}
+```
+
+---
+
+## Step 4 - Persistence (AsyncStorage persister) `[CORE]`
+
+The persister was configured in Step 0c and wired up in Step 0d.
+`lib/queryClient.ts` from Step 0b already has `gcTime: 7 days` - matching `maxAge`.
+
+**Verify persistence:** Fully close the app (wait ~10 s), then reopen it **without internet**.
+The trip list and Explore data should be visible **before** the first network request fires.
+
+Confirm in Expo Dev Tools Network tab that no HTTP request is made on cold start.
+
+> **Key rule:** `gcTime` >= `maxAge` always. Default `gcTime` is 5 minutes -
+> never set `maxAge` longer than `gcTime` or data will be evicted before it is written.
+
+---
+
+## Step 5 - Network status & OfflineBanner `[CORE]`
+
+### 5a. Create `hooks/useNetworkStatus.ts`
+
+```tsx
+import { useState, useEffect } from 'react';
+import NetInfo from '@react-native-community/netinfo';
+
+interface NetworkStatus {
+  isConnected: boolean;
+  isInternetReachable: boolean;
 }
 
-export function useLocation(): UseLocationResult;
+export function useNetworkStatus(): NetworkStatus {
+  const [status, setStatus] = useState<NetworkStatus>({
+    isConnected: true,          // assume connected until first event
+    isInternetReachable: true,
+  });
+
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      setStatus({
+        isConnected:         state.isConnected         ?? true, // null = unknown, assume true
+        isInternetReachable: state.isInternetReachable ?? true,
+      });
+    });
+    return unsubscribe; // cleanup on unmount
+  }, []);
+
+  return status;
+}
 ```
 
-**Requirements:**
+> **Pitfall:** NetInfo can briefly return `null` for both fields on a cold start.
+> Fall back to `true` (not `false`) - otherwise you block all queries on first launch.
 
-1. On mount, call `Location.requestForegroundPermissionsAsync()`.
-2. If `status !== 'granted'` - set `error` to a descriptive message (e.g. `"Location permission denied"`), set `loading` to `false`.
-3. If permission is granted - call `Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })`.
-4. Store the result in `location`, set `loading` to `false`.
-5. Wrap the logic in `try/catch` - on exception set `error` to `e.message`.
-6. All logic inside a `useEffect` with an empty dependency array `[]`.
-7. Return `{ location, error, loading }`.
+### 5b. Create `components/OfflineBanner.tsx`
 
-**⚠ Pitfall:** On the Android emulator you must set a location manually: Extended Controls (…) → Location → enter coordinates. On iOS Simulator: Debug → Location → Custom Location. Without this, `getCurrentPositionAsync` may hang indefinitely.
+```tsx
+import { StyleSheet, Text } from 'react-native';
+import Animated, { FadeInDown, FadeOutUp } from 'react-native-reanimated';
+import { useNetworkStatus } from '../hooks/useNetworkStatus';
 
----
+export function OfflineBanner() {
+  const { isConnected } = useNetworkStatus();
 
-## Step 2 - New "Map" Tab with `<MapView>`
+  if (isConnected) return null;
 
-**Goal:** Add a new tab featuring a full-screen map.
+  return (
+    <Animated.View
+      entering={FadeInDown.duration(300)}
+      exiting={FadeOutUp.duration(300)}
+      style={styles.banner}
+    >
+      <Text style={styles.icon}>📡</Text>
+      <Text style={styles.text}>No internet connection</Text>
+    </Animated.View>
+  );
+}
 
-**Files:** `app/(tabs)/map.tsx`, `app/(tabs)/_layout.tsx`
+const styles = StyleSheet.create({
+  banner: {
+    backgroundColor: '#E94560',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    zIndex: 999,
+  },
+  icon: { fontSize: 16 },
+  text: { color: '#fff', fontWeight: '600', fontSize: 13 },
+});
+```
 
-**Requirements:**
+### 5c. Add OfflineBanner to root layout
 
-1. In `_layout.tsx` add a new `<Tabs.Screen>` with `name="map"`, title "Map", and a map icon (e.g. `map` from Ionicons or `map-pin`).
-2. In `map.tsx` use the `useLocation()` hook from Step 1.
-3. Render `<MapView>` from `react-native-maps`:
-   ```tsx
-   import MapView from 'react-native-maps';
-   ```
-4. `MapView` must have `style={{ flex: 1 }}` - **the parent must also have `flex: 1`**, otherwise the map has 0 height and is invisible.
-5. Set `initialRegion`:
-   - If `location` is available — use `location.coords.latitude` / `longitude` with a delta of `0.1`.
-   - If unavailable - default to Warsaw: `{ latitude: 52.2297, longitude: 21.0122, latitudeDelta: 0.1, longitudeDelta: 0.1 }`.
-6. While `loading === true` - show a spinner (`<ActivityIndicator>`).
-7. When `error` is set - show `<ErrorView>` with the error message and an "Open Settings" button that calls `Linking.openSettings()`.
+In `app/_layout.tsx`, add the banner above `<Stack>`:
 
-**⚠ Pitfall:** `MapView` with `style={{ flex: 1 }}` inside a `<View>` without `flex: 1` = invisible map (0px height). Make sure the entire parent chain has `flex: 1`.
+```tsx
+import { OfflineBanner } from '../components/OfflineBanner';
 
----
+// inside RootLayout return:
+<QueryProvider>
+  <GestureHandlerRootView style={{ flex: 1 }}>
+    <OfflineBanner />
+    <Stack>
+      {/* ... */}
+    </Stack>
+  </GestureHandlerRootView>
+</QueryProvider>
+```
 
-## Step 3 - Extend `Trip` with `coordinates`
+### 5d. Pause queries when offline
 
-**Goal:** Add an optional coordinates field to the trip data model.
-
-**Files:** `types/trip.ts`, `types/tripSchema.ts`
-
-**Requirements:**
-
-1. In `types/trip.ts` extend the `TripData` interface:
-   ```ts
-   coordinates?: {
-     latitude: number;
-     longitude: number;
-   };
-   ```
-2. In `types/tripSchema.ts` add an optional field to the Zod schema:
-   ```ts
-   coordinates: z.object({
-     latitude: z.number(),
-     longitude: z.number(),
-   }).optional(),
-   ```
-3. For testing, manually add coordinates to 2-3 existing trips in your test data or in `TripContext` (e.g. Paris: `48.8566, 2.3522`, Tokyo: `35.6762, 139.6503`, Rome: `41.9028, 12.4964`).
-4. The `coordinates` field is optional - not every trip needs one.
-
-**⚠ Pitfall:** If you use AsyncStorage for trip persistence, legacy data will lack the `coordinates` field. Your code must handle this - always filter with `.filter(t => t.coordinates)` before mapping to markers.
+The `enabled: isConnected` guard is added in the query hooks created in Step 6.
 
 ---
 
-## Step 4 - Trip Markers on the Map
+## Step 6 - Replace useFetch with useQuery `[CORE]`
 
-**Goal:** Display a pin on the map for every trip that has coordinates.
+### 6a. Create `hooks/useCountriesQuery.ts`
 
-**File:** `app/(tabs)/map.tsx`
+```tsx
+import { useQuery } from '@tanstack/react-query';
+import { COUNTRY_API } from '../constants/api';
+import { useNetworkStatus } from './useNetworkStatus';
+import type { Country } from '../types/country';
 
-**Requirements:**
+export function useCountriesQuery() {
+  const { isConnected } = useNetworkStatus();
 
-1. Retrieve the trip list from `TripContext` (`useTrips()`).
-2. Filter trips that have `coordinates`:
-   ```tsx
-   const tripsWithCoords = useMemo(
-     () => trips.filter(t => t.coordinates),
-     [trips]
-   );
-   ```
-3. Render a `<Marker>` for each trip:
-   ```tsx
-   {tripsWithCoords.map(trip => (
-     <Marker
-       key={trip.id}
-       coordinate={trip.coordinates!}
-       title={trip.title}
-       description={trip.destination}
-     />
-   ))}
-   ```
-4. Each marker shows the default pin with `title` and `description` visible on tap.
-5. Use `useMemo` on the filtered list to avoid unnecessary recalculations.
+  return useQuery<Country[]>({
+    queryKey: ['countries'],
+    queryFn:  () => fetch(COUNTRY_API).then((r) => r.json()),
+    staleTime: 1000 * 60 * 60, // 1h - country data rarely changes
+    enabled:   isConnected,    // pause when offline
+  });
+}
+```
 
-**⚠ Pitfall:** Do not forget `key={trip.id}` on `<Marker>`. Without a unique key React cannot efficiently update markers and you may see ghost markers after deleting a trip.
+### 6b. Create `hooks/useUnsplashQuery.ts`
 
----
+```tsx
+import { useQuery } from '@tanstack/react-query';
+import { UNSPLASH_KEY } from '../constants/api';
+import { useNetworkStatus } from './useNetworkStatus';
 
-## Step 5 - Custom Callout with Thumbnail
+export function useUnsplashQuery(searchTerm: string) {
+  const { isConnected } = useNetworkStatus();
 
-**Goal:** When a marker is tapped, show a callout containing a photo thumbnail, title, and destination. Tapping the callout navigates to the trip detail screen.
+  return useQuery({
+    queryKey: ['unsplash', searchTerm],
+    queryFn: async () => {
+      const res = await fetch(
+        `https://api.unsplash.com/search/photos?query=${encodeURIComponent(searchTerm)}&per_page=10`,
+        { headers: { Authorization: `Client-ID ${UNSPLASH_KEY}` } }
+      );
+      if (!res.ok) throw new Error(`Unsplash error: ${res.status}`);
+      return res.json();
+    },
+    enabled:   isConnected && !!searchTerm,
+    staleTime: 1000 * 60 * 30, // 30 min
+  });
+}
+```
 
-**File:** `app/(tabs)/map.tsx`
+### 6c. Update `app/(tabs)/explore.tsx`
 
-**Requirements:**
+```tsx
+import { useCountriesQuery } from '../../hooks/useCountriesQuery';
+import { useUnsplashQuery }  from '../../hooks/useUnsplashQuery';
+import { SkeletonCard }      from '../../components/SkeletonCard';
+import { ErrorView }         from '../../components/ErrorView';
 
-1. Import `Callout` from `react-native-maps`:
-   ```tsx
-   import MapView, { Marker, Callout } from 'react-native-maps';
-   ```
-2. Inside each `<Marker>` add a `<Callout>`:
-   ```tsx
-   <Marker
-     key={trip.id}
-     coordinate={trip.coordinates!}
-   >
-     <Callout onPress={() => router.push(`/trip/${trip.id}`)}>
-       <View style={styles.calloutContainer}>
-         <Image
-           source={{ uri: trip.imageUri }}
-           style={styles.calloutImage}
-         />
-         <View style={styles.calloutText}>
-           <Text style={styles.calloutTitle}>{trip.title}</Text>
-           <Text style={styles.calloutDestination}>{trip.destination}</Text>
-         </View>
-       </View>
-     </Callout>
-   </Marker>
-   ```
-3. Thumbnail: 60×60 px, `borderRadius: 8`.
-4. Callout container: `flexDirection: 'row'`, `alignItems: 'center'`, `gap: 8`, max width ~200 px.
-5. `onPress` on `<Callout>` navigates to `trip/[id].tsx` via `router.push()`.
+export default function ExploreScreen() {
+  const {
+    data: countries,
+    isLoading,
+    isError,
+    refetch,
+  } = useCountriesQuery();
 
-**⚠ Pitfall:** On Android, `Callout` **does not support** interactive children (e.g. `TouchableOpacity`, `Pressable`). The only way to handle taps is `onPress` directly on `<Callout>` or `onCalloutPress` on `<Marker>`. Do not place buttons inside a callout - they will not work.
+  if (isLoading) return <SkeletonCard />;
+  if (isError)   return <ErrorView onRetry={refetch} />;
 
----
-
-## Step 6 - `fitToCoordinates`
-
-**Goal:** After trips load, automatically adjust the map viewport so all markers are visible.
-
-**File:** `app/(tabs)/map.tsx`
-
-**Requirements:**
-
-1. Create a map ref:
-   ```tsx
-   const mapRef = useRef<MapView>(null);
-   ```
-2. Pass the ref to `<MapView ref={mapRef}>`.
-3. Add a `useEffect` that reacts to trip list changes:
-   ```tsx
-   useEffect(() => {
-     const coords = tripsWithCoords.map(t => t.coordinates!);
-     if (coords.length > 0 && mapRef.current) {
-       mapRef.current.fitToCoordinates(coords, {
-         edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
-         animated: true,
-       });
-     }
-   }, [tripsWithCoords]);
-   ```
-4. **The `coords.length > 0` guard is mandatory** - `fitToCoordinates` with an empty array crashes the app.
-5. 50 px padding on each edge - markers near screen edges are hard to tap.
-
-**⚠ Pitfall:** `fitToCoordinates` with a **single** marker zooms to maximum (you see the street but lose context). STRETCH solution: when `coords.length === 1`, set the region manually with a minimum delta (`latitudeDelta: 0.05`).
+  return (
+    <FlatList
+      data={countries}
+      keyExtractor={(item) => item.cca2}
+      renderItem={({ item }) => <CountryCard country={item} />}
+    />
+  );
+}
+```
 
 ---
 
-## Step 7 - Geocoding
+## Step 7 - Background refetch on foreground return `[STRETCH]`
 
-**Goal:** Automatically fetch coordinates from the destination name when adding a trip.
+Add to `providers/QueryProvider.tsx` (or a dedicated `useAppStateFocus` hook):
 
-**File:** `components/AddTripForm.tsx`
+```tsx
+import { useEffect } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
+import { focusManager } from '@tanstack/react-query';
 
-**Requirements:**
+function useAppStateFocus() {
+  useEffect(() => {
+    const subscription = AppState.addEventListener(
+      'change',
+      (state: AppStateStatus) => {
+        // Tell React Query when the app returns to the foreground
+        focusManager.setFocused(state === 'active');
+      }
+    );
+    return () => subscription.remove();
+  }, []);
+}
+```
 
-1. After the user fills in the `destination` field, call `Location.geocodeAsync(destination)`.
-2. `geocodeAsync` returns an array of `{ latitude, longitude }[]` - take the first result.
-3. If geocoding returns results - save `coordinates` to the Trip object.
-4. If geocoding finds nothing - do not block saving the trip, simply leave `coordinates` unset.
-5. Wrap in `try/catch` - geocoding requires an internet connection.
+Call `useAppStateFocus()` inside the `QueryProvider` component.
 
-**⚠ Pitfall:** `Location.geocodeAsync` uses the native geocoder (Apple/Google) - it will not work offline. Do not show the user an error when geocoding fails - the trip should still save.
-
----
-
-## Step 8 - Custom Marker Icon
-
-**Goal:** Replace the default pin with a circular trip photo thumbnail as the marker icon.
-
-**File:** `app/(tabs)/map.tsx`
-
-**Requirements:**
-
-1. Instead of the default pin, render a custom `<View>` inside `<Marker>`:
-   ```tsx
-   <Marker key={trip.id} coordinate={trip.coordinates!}>
-     <View style={styles.customMarker}>
-       <Image
-         source={{ uri: trip.imageUri }}
-         style={styles.markerImage}
-       />
-     </View>
-     <Callout onPress={() => router.push(`/trip/${trip.id}`)}>
-       {/* ... */}
-     </Callout>
-   </Marker>
-   ```
-2. Thumbnail: 40×40 px, `borderRadius: 20` (circle), `borderWidth: 2`, `borderColor: Colors.accent`.
-3. **Set `tracksViewChanges={false}`** on `<Marker>` - without this the map re-renders the marker every frame, causing noticeable FPS drops with 10+ markers.
-
-**⚠ Pitfall:** `tracksViewChanges={false}` means changing `imageUri` will not update the marker icon. If a trip's image changes, you must temporarily set `tracksViewChanges={true}` and revert to `false` after the image loads.
+> **Why?** `refetchOnWindowFocus` only works in web browsers.
+> In React Native you must manually wire `AppState` to `focusManager`.
 
 ---
 
-## Step 9 - Dark Mode Map
+## Step 8 - useInfiniteQuery (Explore pagination) `[STRETCH]`
 
-**Goal:** Add a dark map style and a toggle in the UI.
+Replace `useCountriesQuery` or `useUnsplashQuery` with a paginated version:
 
-**File:** `app/(tabs)/map.tsx`
+```tsx
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { UNSPLASH_KEY } from '../constants/api';
 
-**Requirements:**
+const PAGE_SIZE = 10;
 
-1. Download a dark mode JSON style from https://mapstyle.withgoogle.com/ or https://snazzymaps.com/.
-2. Save the JSON in `constants/mapStyle.ts` (export const `darkMapStyle`).
-3. Pass it to `<MapView customMapStyle={isDark ? darkMapStyle : undefined}>`.
-4. Add a toggle (e.g. `Switch` or an icon) in the top-right corner of the map to switch styles.
-5. Note: `customMapStyle` works **only with the Google Maps provider** (Android). On iOS with Apple Maps this prop is ignored — use `mapType` or `userInterfaceStyle="dark"` (iOS 13+).
+export function useUnsplashInfiniteQuery(searchTerm: string) {
+  return useInfiniteQuery({
+    queryKey: ['unsplash', searchTerm, 'infinite'],
 
-**⚠ Pitfall:** Style JSON from external services must be an array of objects `{ featureType, elementType, stylers }`. Make sure the format is correct — a malformed file results in an unstyled map with no error.
+    queryFn: async ({ pageParam }) => {
+      const res = await fetch(
+        `https://api.unsplash.com/search/photos` +
+        `?query=${encodeURIComponent(searchTerm)}&page=${pageParam}&per_page=${PAGE_SIZE}`,
+        { headers: { Authorization: `Client-ID ${UNSPLASH_KEY}` } }
+      );
+      if (!res.ok) throw new Error(`Unsplash error: ${res.status}`);
+      return res.json();
+    },
+
+    initialPageParam: 1,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.results.length === PAGE_SIZE ? allPages.length + 1 : undefined,
+  });
+}
+```
+
+Usage in `explore.tsx`:
+
+```tsx
+const {
+  data,
+  fetchNextPage,
+  hasNextPage,
+  isFetchingNextPage,
+} = useUnsplashInfiniteQuery(searchTerm);
+
+const photos = data?.pages.flatMap((page) => page.results) ?? [];
+
+<FlatList
+  data={photos}
+  onEndReached={() => hasNextPage && fetchNextPage()}
+  onEndReachedThreshold={0.5}
+  ListFooterComponent={
+    isFetchingNextPage ? <ActivityIndicator /> : null
+  }
+/>
+```
+
+---
+
+## Step 9 - Retry with exponential backoff `[STRETCH]`
+
+Update `lib/queryClient.ts` - skip retrying client errors:
+
+```tsx
+import { QueryClient } from '@tanstack/react-query';
+
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime:  1000 * 60 * 5,
+      gcTime:     1000 * 60 * 60 * 24 * 7,
+      retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 30_000),
+
+      // Do not retry client errors (4xx) - only server errors (5xx)
+      retry: (failureCount, error: unknown) => {
+        const status = (error as { status?: number })?.status;
+        if (status && status >= 400 && status < 500) return false;
+        return failureCount < 3;
+      },
+    },
+    mutations: { retry: 0 },
+  },
+});
+```
 
 ---
 
-## Step 10 - Marker Clustering
+## Step 10 - useMutation updateTrip (optimistic) `[STRETCH]`
 
-**Goal:** When there are many markers, group nearby ones into clusters.
+> **Note:** `updateTrip` does not exist yet in `utils/tripStorage.ts` (the L12 starting state
+> only ships `loadTrips`, `saveTrip`, and `deleteTrip`). Add it first:
+>
+> ```tsx
+> // utils/tripStorage.ts - add this function
+> export async function updateTrip(id: string, data: Partial<TripData>): Promise<Trip> {
+>   const trips = await loadTrips();
+>   const updated = trips.map((t) => (t.id === id ? { ...t, ...data } : t));
+>   await AsyncStorage.setItem(TRIPS_KEY, JSON.stringify(updated));
+>   return updated.find((t) => t.id === id)!;
+> }
+> ```
 
-**Requirements:**
+Add to `hooks/useTripMutations.ts`:
 
-1. Install `react-native-map-clustering`:
-   ```bash
-   npm install react-native-map-clustering
-   ```
-2. Replace `<MapView>` with the clustered variant (or wrap `MapView` from the library):
-   ```tsx
-   import MapView from 'react-native-map-clustering';
-   ```
-3. Each cluster displays the count of grouped markers.
-4. Tapping a cluster zooms into the region encompassing the grouped markers.
-5. Add 10+ trips with different coordinates to test clustering.
+```tsx
+// Add updateTrip to the import:
+import { saveTrip, deleteTrip, updateTrip } from '../utils/tripStorage';
 
-**⚠ Pitfall:** `react-native-map-clustering` wraps `MapView` — if you import `MapView` from this package, do not import it simultaneously from `react-native-maps` in the same file. `Marker` and `Callout` are still imported from `react-native-maps`.
+export function useUpdateTrip() {
+  const qc = useQueryClient();
 
----
+  return useMutation<Trip, Error, { id: string; data: Partial<TripData> }>({
+    mutationFn: ({ id, data }) => updateTrip(id, data),
 
-## Step 11 - Reverse Geocoding on Trip Detail
+    onMutate: async ({ id, data }) => {
+      await qc.cancelQueries({ queryKey: ['trips'] });
+      const previous = qc.getQueryData<Trip[]>(['trips']) ?? [];
 
-**Goal:** On the trip detail screen, display the full address alongside the destination name.
+      qc.setQueryData<Trip[]>(['trips'], (old = []) =>
+        old.map((trip) => (trip.id === id ? { ...trip, ...data } : trip))
+      );
 
-**File:** `app/trip/[id].tsx`
+      return { previous };
+    },
 
-**Requirements:**
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(['trips'], ctx.previous);
+    },
 
-1. If the trip has `coordinates`, call `Location.reverseGeocodeAsync(coordinates)` on mount.
-2. `reverseGeocodeAsync` returns an array of objects with fields: `street`, `city`, `region`, `country`, `postalCode`.
-3. Format the address and display it below the destination name (e.g. "Champs-Élysées, Paris, France").
-4. Show a spinner while the address is loading.
-5. If reverse geocoding fails - display only the destination name (no error).
-
-**⚠ Pitfall:** `reverseGeocodeAsync` may return `null` for some fields (e.g. `street` for a wilderness location). Check each field before using it and join only non-empty values.
-
----
+    onSettled: () => qc.invalidateQueries({ queryKey: ['trips'] }),
+  });
+}
+```

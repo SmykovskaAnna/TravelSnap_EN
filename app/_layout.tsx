@@ -3,7 +3,9 @@ import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+import { QueryProvider } from '@/providers/QueryProvider';
 import { TripProvider } from '@/contexts/TripContext';
+import { OfflineBanner } from '@/components/OfflineBanner';
 import { Colors } from '@/constants/Colors';
 
 const darkHeaderOptions = {
@@ -13,8 +15,10 @@ const darkHeaderOptions = {
 
 export default function RootLayout() {
   return (
+    <QueryProvider>
     <GestureHandlerRootView style={{ flex: 1 }}>
     <TripProvider>
+      <OfflineBanner />
       <Stack screenOptions={darkHeaderOptions}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen
@@ -49,5 +53,6 @@ export default function RootLayout() {
       <StatusBar style="light" />
     </TripProvider>
     </GestureHandlerRootView>
+    </QueryProvider>
   );
 }

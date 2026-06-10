@@ -2,8 +2,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useMemo } from 'react';
 
-import { useFetch } from '@/hooks/useFetch';
-import { RESTCOUNTRIES_BASE_URL } from '@/constants/api';
+import { useCountriesQuery } from '@/hooks/useCountriesQuery';
 import type { Country } from '@/types/country';
 import { Colors } from '@/constants/Colors';
 
@@ -12,8 +11,7 @@ interface CountryCardProps {
 }
 
 export default function CountryCard({ countryName }: CountryCardProps) {
-  const url = `${RESTCOUNTRIES_BASE_URL}/name/${encodeURIComponent(countryName)}`;
-  const { data, loading } = useFetch<Country[]>(url);
+  const { data, isLoading: loading } = useCountriesQuery(countryName);
 
   const country = data?.[0];
 
